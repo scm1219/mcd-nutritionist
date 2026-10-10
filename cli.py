@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""麦麦营养师 CLI：argparse 子命令骨架，已注册 ``analyze``。
+"""麦麦营养师 CLI：argparse 子命令骨架，已注册 ``analyze`` 与 ``history``。
 
 各子命令处理函数模式统一：构造 payload → ``emit(payload, render_human(...), args.json)``
 → ``return EXIT_OK``；错误一律走 ``fail``（stderr + 退出码 1 业务 / 2 参数）。
@@ -8,6 +8,7 @@
 
     python cli.py analyze --items "双层吉士汉堡x1,中薯条x1" [--daily-kcal 2000]
         [--daily-sodium 2000] [--json]
+    python cli.py history [--days N] [--detail] [--json]
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ from mcdu.mcp_client import McduError, McpClient
 from mcdu.nutrition import NutritionTable, load_aliases, parse_items_arg
 from mcdu.render import EXIT_BUSINESS, EXIT_OK, EXIT_USAGE, emit, fail
 from scripts.analyze import build_analysis, render_human
+from scripts.history import (
+    TOOL_NAME as ORDER_LIST_TOOL,
+    render_human as render_history,
+    summarize as summarize_history,
+)
 
 #: 仓库根（cli.py 所在目录）：定位缓存与别名表
 REPO_ROOT = Path(__file__).resolve().parent
@@ -50,6 +56,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analyze.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     analyze.set_defaults(handler=cmd_analyze)
+
+    history = subparsers.add_parser("history", help="历史订单营养回顾")
+    history.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="只看最近 N 天的订单（以数据中最新一单时间为基准）",
+    )
+    history.add_argument(
+        "--detail", action="store_true", help="展开每单明细（默认只看汇总统计）"
+    )
+    history.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    history.set_defaults(handler=cmd_history)
     return parser
 
 
@@ -100,6 +119,28 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         )
 
     emit(analysis, render_human(analysis), args.json)
+    return EXIT_OK
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """history 子命令：拉取 order-list → 展开子项 → 营养统计 → 双通道输出。"""
+    if args.days is not None and args.days < 1:
+        fail(f"参数错误：--days 必须为正整数（收到 {args.days}）", EXIT_USAGE)
+
+    # 订单数据只能来自 MCP，没有 Token 就明确报业务错误
+    try:
+        orders_raw = McpClient().call_tool(ORDER_LIST_TOOL, {})
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    try:
+        table = _load_table()
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    summary = summarize_history(orders_raw, table, args.days)
+    summary["detail"] = args.detail  # 展示开关只给人读渲染用
+    emit(summary, render_history(summary), args.json)
     return EXIT_OK
 
 
