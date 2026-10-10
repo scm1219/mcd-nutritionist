@@ -317,8 +317,10 @@ class Draft:
     """一份下单草稿：items 是完整 create-order items（不含门店级参数）。
 
     营养合计（``analysis``）与算价结果（``price``）内联保存，confirm 时
-    直接复用；门店级参数（storeCode/beType/orderType/beCode 等）由
-    ``mode`` / ``store_code`` 及 confirm 阶段的旗标重建。
+    直接复用；门店级参数（storeCode/beType/orderType）由 ``mode`` /
+    ``store_code`` 重建。``be_code`` / ``address_id`` / ``need_tableware``
+    在 draft 阶段一并捕获并随草稿持久化——confirm 只从草稿读这些参数
+    （单一事实源），不再接受同类旗标、也不重新算价。
     """
 
     draft_id: str
@@ -329,6 +331,10 @@ class Draft:
     address_id: str | None
     analysis: dict
     price: dict
+    #: 外送（delivery）场景必传的业务编码；到店取餐不传（保持 None）
+    be_code: str | None = None
+    #: 是否需要餐具（draft 的 --no-tableware 在此捕获，confirm 原样下发）
+    need_tableware: bool = True
 
 
 class DraftStore:
@@ -366,6 +372,8 @@ class DraftStore:
                 address_id=payload.get("address_id"),
                 analysis=dict(payload["analysis"]),
                 price=dict(payload["price"]),
+                be_code=payload.get("be_code"),
+                need_tableware=bool(payload.get("need_tableware", True)),
             )
         except (OSError, ValueError, TypeError, KeyError):
             return None  # 损坏视同没有（draft_id 为随机 hex，几乎不可能复用）
@@ -373,6 +381,13 @@ class DraftStore:
             path.unlink(missing_ok=True)
             return None
         return draft
+
+    def delete(self, draft_id: str) -> None:
+        """删除草稿文件（confirm 成功下单后调用，防草稿复用二次下单）。
+
+        文件不存在时静默（幂等）。
+        """
+        self._path(draft_id).unlink(missing_ok=True)
 
     def _path(self, draft_id: str) -> Path:
         return self.dir / f"draft_{draft_id}.json"

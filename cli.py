@@ -17,6 +17,9 @@
     python cli.py order draft --store CODE [--mode pickup|delivery]
         --items "双层吉士汉堡x1,中薯条x1" [--coupon ID] [--address-id ID]
         [--no-tableware] [--be-code BECODE] [--json]
+    python cli.py order confirm --draft-id ID --yes-place-order [--json]
+    python cli.py order status --order-id ID [--json]
+    python cli.py order cancel --order-id ID --reason CODE --yes-cancel [--json]
 """
 
 from __future__ import annotations
@@ -44,15 +47,30 @@ from scripts.history import (
 )
 from scripts.order import (
     ADDRESSES_TOOL,
+    CANCEL_ORDER_TOOL,
+    CREATE_ORDER_TOOL,
+    QUERY_ORDER_TOOL,
+    append_orders_log,
+    build_cancel_output,
+    build_confirm_output,
     build_draft,
     build_draft_payload,
     build_menu_payload,
+    build_status_output,
     build_stores_payload,
+    create_order_arguments,
+    extract_order_id,
     parse_addresses,
     render_address_choices,
+    render_cancel_preview,
+    render_confirm_preview,
     render_draft,
     render_menu,
+    render_order_cancelled,
+    render_order_created,
+    render_order_status,
     render_stores,
+    require_yes,
 )
 from scripts.suggest import (
     render_human as render_suggest,
@@ -73,6 +91,8 @@ ALIASES_PATH = REPO_ROOT / "aliases.json"
 MENU_CACHE_DIR = REPO_ROOT / "data"
 #: 下单草稿目录（draft_{id}.json 落在这里，30 分钟 TTL）
 DRAFT_DIR = REPO_ROOT / "data"
+#: 下单流水（confirm 成功后追加：[{draft_id, order_id, created_at, raw}]）
+ORDERS_LOG_PATH = REPO_ROOT / "data" / "orders_log.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     suggest.set_defaults(handler=cmd_suggest)
 
-    order = subparsers.add_parser("order", help="门店/菜单查询")
+    order = subparsers.add_parser("order", help="门店/菜单/草稿/下单流程")
     order_sub = order.add_subparsers(dest="order_command", required=True, metavar="子命令")
 
     order_stores = order_sub.add_parser("stores", help="按城市+关键词搜索可点餐门店")
@@ -208,6 +228,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     order_draft.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     order_draft.set_defaults(handler=cmd_order_draft)
+
+    order_confirm = order_sub.add_parser(
+        "confirm", help="确认草稿并真实下单（create-order，需 --yes-place-order）"
+    )
+    order_confirm.add_argument(
+        "--draft-id", required=True, help="草稿 ID（order draft 输出的 draft_id）"
+    )
+    order_confirm.add_argument(
+        "--yes-place-order",
+        action="store_true",
+        help="安全门：确认真实下单；缺省时只打印将执行的草稿摘要并退出",
+    )
+    order_confirm.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    order_confirm.set_defaults(handler=cmd_order_confirm)
+
+    order_status = order_sub.add_parser(
+        "status", help="查询订单详情（query-order 透传）"
+    )
+    order_status.add_argument("--order-id", required=True, help="订单号")
+    order_status.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    order_status.set_defaults(handler=cmd_order_status)
+
+    order_cancel = order_sub.add_parser(
+        "cancel", help="取消订单（cancel-order，需 --yes-cancel）"
+    )
+    order_cancel.add_argument("--order-id", required=True, help="订单号")
+    order_cancel.add_argument(
+        "--reason",
+        required=True,
+        help="取消原因 code：1=改主意了 2=重复下单 3=点错了/点多了/点少了"
+        " 4=地址/电话填错了 5=送达时间选错了 -1=其它原因",
+    )
+    order_cancel.add_argument(
+        "--yes-cancel",
+        action="store_true",
+        help="安全门：确认取消（不可逆）；缺省时只打印将取消的订单并退出",
+    )
+    order_cancel.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    order_cancel.set_defaults(handler=cmd_order_cancel)
     return parser
 
 
@@ -464,14 +523,89 @@ def cmd_order_draft(args: argparse.Namespace) -> int:
 
     DraftStore(DRAFT_DIR).save(draft)
     emit(
-        build_draft_payload(
-            draft, display, combos,
-            need_tableware=args.need_tableware, coupon_id=args.coupon,
-        ),
-        render_draft(
-            draft, display, combos,
-            need_tableware=args.need_tableware, coupon_id=args.coupon,
-        ),
+        build_draft_payload(draft, display, combos, coupon_id=args.coupon),
+        render_draft(draft, display, combos, coupon_id=args.coupon),
+        args.json,
+    )
+    return EXIT_OK
+
+
+def cmd_order_confirm(args: argparse.Namespace) -> int:
+    """order confirm：草稿 →（安全门）→ create-order → 流水 → 删草稿。
+
+    顺序即安全边界：先确认草稿存在且未过期（否则退出 1 并提示重新
+    draft），再过 ``--yes-place-order`` 安全门，最后才构造 client 下单。
+    下单参数全部读自草稿本体（单一事实源），失败时草稿保留可重试。
+    """
+    draft_store = DraftStore(DRAFT_DIR)
+    draft = draft_store.load(args.draft_id)
+    if draft is None:
+        fail(
+            f"草稿 {args.draft_id} 不存在或已过期（30 分钟内有效），"
+            "请重新 order draft 生成",
+            EXIT_BUSINESS,
+        )
+
+    if not args.yes_place_order:
+        print(render_confirm_preview(draft))
+        require_yes(args.yes_place_order, f"真实下单（create-order，草稿 {args.draft_id}）")
+
+    try:
+        arguments = create_order_arguments(draft)
+    except ValueError as exc:  # 草稿里 mode 不合法（旧版/手改文件）
+        fail(str(exc), EXIT_BUSINESS)
+
+    try:
+        client = McpClient()
+        raw = client.call_tool(CREATE_ORDER_TOOL, arguments)
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    order_id = extract_order_id(raw)
+    append_orders_log(ORDERS_LOG_PATH, draft.draft_id, order_id, raw)
+    draft_store.delete(draft.draft_id)
+    emit(
+        build_confirm_output(draft.draft_id, order_id, raw),
+        render_order_created(draft.draft_id, order_id, raw),
+        args.json,
+    )
+    return EXIT_OK
+
+
+def cmd_order_status(args: argparse.Namespace) -> int:
+    """order status：query-order 透传（orderId 单参数）。"""
+    try:
+        client = McpClient()
+        raw = client.call_tool(QUERY_ORDER_TOOL, {"orderId": args.order_id})
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(
+        build_status_output(args.order_id, raw),
+        render_order_status(args.order_id, raw),
+        args.json,
+    )
+    return EXIT_OK
+
+
+def cmd_order_cancel(args: argparse.Namespace) -> int:
+    """order cancel：（安全门）→ cancel-order（orderId + cancelReasonCode）。"""
+    if not args.yes_cancel:
+        print(render_cancel_preview(args.order_id, args.reason))
+        require_yes(args.yes_cancel, f"取消订单 {args.order_id}（cancel-order）")
+
+    try:
+        client = McpClient()
+        raw = client.call_tool(
+            CANCEL_ORDER_TOOL,
+            {"orderId": args.order_id, "cancelReasonCode": str(args.reason)},
+        )
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(
+        build_cancel_output(args.order_id, raw),
+        render_order_cancelled(args.order_id, raw),
         args.json,
     )
     return EXIT_OK

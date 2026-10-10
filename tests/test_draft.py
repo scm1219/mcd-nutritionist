@@ -193,6 +193,44 @@ def test_draft_store_roundtrip(tmp_path):
     assert loaded == draft  # dataclass 逐字段相等（analysis/price dict 也相等）
 
 
+def test_draft_store_persists_be_code_and_tableware(tmp_path):
+    """controller ruling：be_code / need_tableware 随草稿持久化并原样读回
+    （confirm 只信草稿，这两个字段必须先在 draft 阶段落盘）。"""
+    store = DraftStore(tmp_path)
+    draft = _make_draft(
+        mode="delivery",
+        address_id="ADDR7",
+        be_code="B1450244",
+        need_tableware=False,  # --no-tableware
+    )
+
+    store.save(draft)
+    loaded = store.load("abcd1234")
+
+    assert loaded.be_code == "B1450244"
+    assert loaded.need_tableware is False
+    saved = json.loads((tmp_path / "draft_abcd1234.json").read_text(encoding="utf-8"))
+    assert saved["be_code"] == "B1450244"  # JSON 持久化里真实存在
+    assert saved["need_tableware"] is False
+
+
+def test_draft_store_defaults_backward_compatible(tmp_path):
+    """旧版草稿（无 be_code/need_tableware 键）仍可读：默认 None/True。"""
+    legacy = _make_draft()
+    legacy.be_code = None
+    payload = json.loads(json.dumps(legacy.__dict__, ensure_ascii=False))
+    del payload["be_code"]
+    del payload["need_tableware"]
+    (tmp_path / "draft_abcd1234.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+    loaded = DraftStore(tmp_path).load("abcd1234")
+    assert loaded is not None
+    assert loaded.be_code is None
+    assert loaded.need_tableware is True
+
+
 def test_draft_store_expired_load_returns_none_and_deletes(tmp_path):
     store = DraftStore(tmp_path, ttl_seconds=1800)
     stale = _make_draft(created_at=time.time() - 1801)  # 超过 30 分钟
@@ -427,6 +465,11 @@ def test_cli_draft_json_payload(capsys, monkeypatch, tmp_path):
     assert payload["mode"] == "pickup"
     assert payload["items"] == [{"productCode": "M1", "quantity": 1}]
     assert payload["need_tableware"] is False  # --no-tableware 生效
+    # --no-tableware 在 draft 阶段落进草稿本体（confirm 只信草稿）
+    saved = json.loads(
+        next(Path(tmp_path).glob("draft_*.json")).read_text(encoding="utf-8")
+    )
+    assert saved["need_tableware"] is False
     assert payload["analysis"]["totals"]["energy_kcal"] == 429.0
     assert payload["price"]["amount"] == 36.5
     assert payload["next"].startswith("python cli.py order confirm --draft-id")
@@ -544,6 +587,7 @@ def test_cli_draft_delivery_with_address(capsys, monkeypatch, tmp_path):
         next(Path(tmp_path).glob("draft_*.json")).read_text(encoding="utf-8")
     )
     assert saved["address_id"] == "ADDR7"
+    assert saved["be_code"] == "B1450244"  # be_code 在 draft 阶段落盘（controller ruling）
     assert saved["mode"] == "delivery"
 
     out = capsys.readouterr().out
