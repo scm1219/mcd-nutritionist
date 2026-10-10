@@ -10,6 +10,8 @@
         [--daily-sodium 2000] [--json]
     python cli.py history [--days N] [--detail] [--json]
     python cli.py suggest --max-kcal 600 [--min-protein 25] [--top 3] [--json]
+    python cli.py order stores --city 上海 --keyword 陆家嘴 [--json]
+    python cli.py order menu --store CODE [--mode pickup|delivery] [--json]
 """
 
 from __future__ import annotations
@@ -20,12 +22,25 @@ from pathlib import Path
 
 from mcdu.mcp_client import McduError, McpClient
 from mcdu.nutrition import NutritionTable, load_aliases, parse_items_arg
+from mcdu.orderflow import (
+    MODE_BE_TYPES,
+    MODE_ORDER_TYPES,
+    STORES_TOOL,
+    load_menu,
+    parse_stores,
+)
 from mcdu.render import EXIT_BUSINESS, EXIT_OK, EXIT_USAGE, emit, fail
 from scripts.analyze import build_analysis, render_human
 from scripts.history import (
     TOOL_NAME as ORDER_LIST_TOOL,
     render_human as render_history,
     summarize as summarize_history,
+)
+from scripts.order import (
+    build_menu_payload,
+    build_stores_payload,
+    render_menu,
+    render_stores,
 )
 from scripts.suggest import render_human as render_suggest, suggest_combos, to_payload
 
@@ -35,10 +50,12 @@ REPO_ROOT = Path(__file__).resolve().parent
 CACHE_PATH = REPO_ROOT / "data" / "nutrition_cache.json"
 #: 别名表（可选，不存在则不用别名）
 ALIASES_PATH = REPO_ROOT / "aliases.json"
+#: 门店菜单缓存目录（菜单缓存文件 menu_cache_{store}_{mode}.json 落在这里）
+MENU_CACHE_DIR = REPO_ROOT / "data"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """构造 CLI 解析器：子命令骨架，目前注册了 analyze。"""
+    """构造 CLI 解析器：analyze / history / suggest 与 order 子命令组。"""
     parser = argparse.ArgumentParser(
         prog="cli.py", description="麦麦营养师：麦当劳点单营养分析"
     )
@@ -82,6 +99,26 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--top", type=int, default=3, help="输出组合数，默认 3")
     suggest.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     suggest.set_defaults(handler=cmd_suggest)
+
+    order = subparsers.add_parser("order", help="门店/菜单查询")
+    order_sub = order.add_subparsers(dest="order_command", required=True, metavar="子命令")
+
+    order_stores = order_sub.add_parser("stores", help="查询可点餐门店")
+    order_stores.add_argument("--city", required=True, help="城市名，如 上海")
+    order_stores.add_argument("--keyword", required=True, help="位置关键词，如 陆家嘴")
+    order_stores.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    order_stores.set_defaults(handler=cmd_order_stores)
+
+    order_menu = order_sub.add_parser("menu", help="查询门店菜单")
+    order_menu.add_argument("--store", required=True, help="门店编码 storeCode（见 order stores）")
+    order_menu.add_argument(
+        "--mode",
+        choices=list(MODE_BE_TYPES),
+        default="pickup",
+        help="取餐方式：pickup=到店取餐（默认）/ delivery=麦乐送",
+    )
+    order_menu.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    order_menu.set_defaults(handler=cmd_order_menu)
     return parser
 
 
@@ -182,6 +219,48 @@ def cmd_suggest(args: argparse.Namespace) -> int:
     emit(
         to_payload(args.max_kcal, args.min_protein, combos),
         render_suggest(combos),
+        args.json,
+    )
+    return EXIT_OK
+
+
+def cmd_order_stores(args: argparse.Namespace) -> int:
+    """order stores：query-nearby-stores（beType=1 到店）→ 精简门店列表。"""
+    try:
+        raw = McpClient().call_tool(
+            STORES_TOOL,
+            {
+                "beType": 1,
+                "searchType": 1,
+                "city": args.city,
+                "keyword": args.keyword,
+            },
+        )
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    stores = parse_stores(raw)
+    emit(build_stores_payload(stores), render_stores(stores), args.json)
+    return EXIT_OK
+
+
+def cmd_order_menu(args: argparse.Namespace) -> int:
+    """order menu：门店菜单（10 分钟 TTL 缓存，mode → beType/orderType）。"""
+    be_type = MODE_BE_TYPES[args.mode]
+    order_type = MODE_ORDER_TYPES[args.mode]
+    # 缓存新鲜时不必联网：Token 缺失只在真正要重取时才报错
+    try:
+        client: McpClient | None = McpClient()
+    except McduError:
+        client = None
+    try:
+        items = load_menu(client, args.store, be_type, order_type, MENU_CACHE_DIR)
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(
+        build_menu_payload(args.store, args.mode, items),
+        render_menu(args.store, args.mode, items),
         args.json,
     )
     return EXIT_OK
