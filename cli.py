@@ -10,6 +10,7 @@
         [--daily-sodium 2000] [--json]
     python cli.py history [--days N] [--detail] [--json]
     python cli.py suggest --max-kcal 600 [--min-protein 25] [--top 3] [--json]
+        [--store CODE [--max-price 40] [--mode pickup|delivery] [--be-code BECODE]]
     python cli.py order stores --city 上海 --keyword 陆家嘴 [--json]
     python cli.py order menu --store CODE [--mode pickup|delivery]
         [--be-code BECODE] [--json]
@@ -43,7 +44,14 @@ from scripts.order import (
     render_menu,
     render_stores,
 )
-from scripts.suggest import render_human as render_suggest, suggest_combos, to_payload
+from scripts.suggest import (
+    render_human as render_suggest,
+    render_store,
+    suggest_combos,
+    suggest_store,
+    to_payload,
+    to_store_payload,
+)
 
 #: 仓库根（cli.py 所在目录）：定位缓存与别名表
 REPO_ROOT = Path(__file__).resolve().parent
@@ -98,6 +106,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-protein", type=float, default=0.0, help="蛋白质下限（g），默认 0"
     )
     suggest.add_argument("--top", type=int, default=3, help="输出组合数，默认 3")
+    suggest.add_argument(
+        "--store",
+        default=None,
+        help="门店编码 storeCode（见 order stores）：启用门店模式，"
+        "用真实菜单组合并以 calculate-price 取真实实付价",
+    )
+    suggest.add_argument(
+        "--max-price",
+        type=float,
+        default=None,
+        help="组合实付总价上限（元），仅 --store 门店模式有效",
+    )
+    suggest.add_argument(
+        "--mode",
+        choices=list(MODE_BE_TYPES),
+        default="pickup",
+        help="取餐方式：pickup=到店取餐（默认）/ delivery=麦乐送（需 --be-code）",
+    )
+    suggest.add_argument(
+        "--be-code",
+        default=None,
+        help="业务编码 beCode：delivery（麦乐送）等场景必传，"
+        "来自门店查询结果（order stores 输出的 beCode 字段）",
+    )
     suggest.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     suggest.set_defaults(handler=cmd_suggest)
 
@@ -202,15 +234,20 @@ def cmd_history(args: argparse.Namespace) -> int:
 
 
 def cmd_suggest(args: argparse.Namespace) -> int:
-    """suggest 子命令：营养表内按热量/蛋白质约束搜索配餐组合（基础模式，
-    ``--store`` 门店菜单模式由 Task 7 扩展）。"""
+    """suggest 子命令：营养表内按约束搜索组合（基础模式）；``--store CODE``
+    切换门店模式（真实菜单 + calculate-price 实付价，可加 ``--max-price``）。"""
     if args.top < 1:
         fail(f"参数错误：--top 必须为正整数（收到 {args.top}）", EXIT_USAGE)
+    if args.max_price is not None and args.store is None:
+        fail("参数错误：--max-price 仅在 --store 门店模式下可用", EXIT_USAGE)
 
     try:
         table = _load_table()
     except McduError as exc:
         fail(exc.message, EXIT_BUSINESS)
+
+    if args.store is not None:
+        return _cmd_suggest_store(args, table)
 
     combos = suggest_combos(
         table, max_kcal=args.max_kcal, min_protein=args.min_protein, top=args.top
@@ -226,6 +263,51 @@ def cmd_suggest(args: argparse.Namespace) -> int:
     emit(
         to_payload(args.max_kcal, args.min_protein, combos),
         render_suggest(combos),
+        args.json,
+    )
+    return EXIT_OK
+
+
+def _cmd_suggest_store(args: argparse.Namespace, table: NutritionTable) -> int:
+    """suggest 的门店模式：菜单可走缓存，但算价必须联网（无 Token 即业务错误）。"""
+    try:
+        client = McpClient()
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    try:
+        combos = suggest_store(
+            client,
+            table,
+            args.store,
+            args.mode,
+            max_kcal=args.max_kcal,
+            min_protein=args.min_protein,
+            max_price=args.max_price,
+            top=args.top,
+            cache_dir=MENU_CACHE_DIR,
+            be_code=args.be_code,
+        )
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    if not combos:
+        caps = [f"热量 ≤ {args.max_kcal:g} kcal"]
+        if args.min_protein > 0:
+            caps.append(f"蛋白质 ≥ {args.min_protein:g} g")
+        if args.max_price is not None:
+            caps.append(f"实付总价 ≤ {args.max_price:g} 元")
+        fail(
+            f"无满足条件的配餐组合（{' 且 '.join(caps)}），"
+            "可放宽 --max-kcal / 降低 --min-protein / 提高 --max-price 后重试",
+            EXIT_BUSINESS,
+        )
+
+    emit(
+        to_store_payload(
+            args.store, args.mode, args.max_kcal, args.min_protein, args.max_price, combos
+        ),
+        render_store(args.store, args.mode, combos),
         args.json,
     )
     return EXIT_OK
