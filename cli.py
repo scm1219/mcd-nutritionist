@@ -11,7 +11,8 @@
     python cli.py history [--days N] [--detail] [--json]
     python cli.py suggest --max-kcal 600 [--min-protein 25] [--top 3] [--json]
     python cli.py order stores --city 上海 --keyword 陆家嘴 [--json]
-    python cli.py order menu --store CODE [--mode pickup|delivery] [--json]
+    python cli.py order menu --store CODE [--mode pickup|delivery]
+        [--be-code BECODE] [--json]
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     order = subparsers.add_parser("order", help="门店/菜单查询")
     order_sub = order.add_subparsers(dest="order_command", required=True, metavar="子命令")
 
-    order_stores = order_sub.add_parser("stores", help="查询可点餐门店")
+    order_stores = order_sub.add_parser("stores", help="按城市+关键词搜索可点餐门店")
     order_stores.add_argument("--city", required=True, help="城市名，如 上海")
     order_stores.add_argument("--keyword", required=True, help="位置关键词，如 陆家嘴")
     order_stores.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
@@ -116,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(MODE_BE_TYPES),
         default="pickup",
         help="取餐方式：pickup=到店取餐（默认）/ delivery=麦乐送",
+    )
+    order_menu.add_argument(
+        "--be-code",
+        default=None,
+        help="业务编码 beCode：delivery（麦乐送）等场景必传，来自门店查询结果"
+        "（order stores 输出的 beCode 字段；到店取餐不需要）",
     )
     order_menu.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     order_menu.set_defaults(handler=cmd_order_menu)
@@ -225,13 +232,13 @@ def cmd_suggest(args: argparse.Namespace) -> int:
 
 
 def cmd_order_stores(args: argparse.Namespace) -> int:
-    """order stores：query-nearby-stores（beType=1 到店）→ 精简门店列表。"""
+    """order stores：query-nearby-stores（beType=1 到店，searchType=2 位置搜索）。"""
     try:
         raw = McpClient().call_tool(
             STORES_TOOL,
             {
                 "beType": 1,
-                "searchType": 1,
+                "searchType": 2,  # 实测 1=收藏餐厅（keyword 无效），2 才按城市+关键词过滤
                 "city": args.city,
                 "keyword": args.keyword,
             },
@@ -254,7 +261,9 @@ def cmd_order_menu(args: argparse.Namespace) -> int:
     except McduError:
         client = None
     try:
-        items = load_menu(client, args.store, be_type, order_type, MENU_CACHE_DIR)
+        items = load_menu(
+            client, args.store, be_type, order_type, MENU_CACHE_DIR, be_code=args.be_code
+        )
     except McduError as exc:
         fail(exc.message, EXIT_BUSINESS)
 

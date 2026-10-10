@@ -2,14 +2,65 @@
  "success": true,
  "code": 200,
  "message": "请求成功",
- "datetime": "2026-10-10 12:45:33",
- "traceId": "36780bd5f49210e8253b643600d56dc8",
+ "datetime": "2026-10-10 12:58:55",
+ "traceId": "ad266852f929879ce820b71a984e0573",
  "data": [
   {
-   "storeCode": "1450244",
-   "storeName": "麦当劳上海延安西路地铁站餐厅",
-   "address": "上海轨道交通三号线延安西路站3-108",
-   "distance": 0,
+   "storeCode": "1450127",
+   "storeName": "麦当劳上海陆家嘴明珠环餐厅",
+   "address": "世纪大道55号2F-1室",
+   "distance": 75,
+   "businessStatus": true,
+   "businessStartTime": "07:00",
+   "businessEndTime": "23:00",
+   "longitude": 0.0,
+   "latitude": 0.0,
+   "reservation": true,
+   "reservationTimeOptions": [
+    {
+     "date": "2026-10-10",
+     "today": true,
+     "reservationOptionText": "午餐(10:44至14:15)，下午茶(14:44至16:45)"
+    },
+    {
+     "date": "2026-10-11",
+     "today": false,
+     "reservationOptionText": "早餐(07:14至10:15)，午餐(10:44至14:15)，下午茶(14:44至16:45)"
+    }
+   ]
+  },
+  {
+   "storeCode": "1450579",
+   "storeName": "麦当劳上海正大广场餐厅",
+   "address": "陆家嘴西路168号5F02室商铺",
+   "distance": 268,
+   "businessStatus": true,
+   "businessStartTime": "10:00",
+   "businessEndTime": "22:00",
+   "longitude": 0.0,
+   "latitude": 0.0,
+   "reservation": true,
+   "reservationTimeOptions": [
+    {
+     "date": "2026-10-10",
+     "today": true,
+     "reservationOptionText": "午餐(10:14至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)"
+    },
+    {
+     "date": "2026-10-11",
+     "today": false,
+     "reservationOptionText": "午餐(10:14至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)"
+    }
+   ]
+  },
+  {
+   "storeCode": "1450512",
+   "storeName": "麦当劳上海陆家嘴星展餐厅",
+   "address": "陆家嘴环路1318号地下一层09室",
+   "distance": 445,
+   "businessStatus": true,
+   "businessStartTime": "07:00",
+   "businessEndTime": "22:00",
    "longitude": 0.0,
    "latitude": 0.0,
    "reservation": true,
@@ -22,15 +73,18 @@
     {
      "date": "2026-10-11",
      "today": false,
-     "reservationOptionText": "早餐(06:44至10:15)，午餐(10:44至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)"
+     "reservationOptionText": "早餐(07:14至10:15)，午餐(10:44至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)"
     }
    ]
   },
   {
-   "storeCode": "1450136",
-   "storeName": "麦当劳上海华山路餐厅",
-   "address": "华山路2038号",
-   "distance": 0,
+   "storeCode": "1450330",
+   "storeName": "麦当劳上海浦东上海中心餐厅",
+   "address": "银城中路501号B1-1室",
+   "distance": 490,
+   "businessStatus": true,
+   "businessStartTime": "07:00",
+   "businessEndTime": "22:00",
    "longitude": 0.0,
    "latitude": 0.0,
    "reservation": true,
@@ -38,14 +92,27 @@
     {
      "date": "2026-10-10",
      "today": true,
-     "reservationOptionText": "午餐(10:44至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)，宵夜(22:14至23:59)"
+     "reservationOptionText": "午餐(10:44至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)"
     },
     {
      "date": "2026-10-11",
      "today": false,
-     "reservationOptionText": "早餐(05:14至10:15)，午餐(10:44至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)，宵夜(22:14至23:59)"
+     "reservationOptionText": "早餐(07:14至10:15)，午餐(10:44至14:15)，下午茶(14:44至16:45)，夜市(17:14至21:45)"
     }
    ]
+  },
+  {
+   "storeCode": "1450140",
+   "storeName": "麦当劳上海东昌路世界广场餐厅",
+   "address": "浦东南路855号B1层西部XA1-01-08商铺",
+   "distance": 1344,
+   "businessStatus": true,
+   "businessStartTime": "07:00",
+   "businessEndTime": "22:00",
+   "longitude": 0.0,
+   "latitude": 0.0,
+   "reservation": false,
+   "reservationTimeOptions": []
   }
  ]
 }

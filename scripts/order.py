@@ -20,7 +20,7 @@ def build_stores_payload(stores: list[dict]) -> dict:
 
 
 def render_stores(stores: list[dict]) -> str:
-    """门店列表渲染为中文人读文本：序号 + 店名（编码）+ 地址。"""
+    """门店列表渲染为中文人读文本：序号 + 店名（编码）+ 地址 + 距离 + beCode。"""
     if not stores:
         return "未找到可点餐门店：换个城市或关键词试试"
     lines = [f"可点餐门店（{len(stores)} 家）"]
@@ -29,6 +29,11 @@ def render_stores(stores: list[dict]) -> str:
         address = str(store.get("address") or "").strip()
         if address:
             lines.append(f"    地址：{address}")
+        distance = store.get("distance")
+        if isinstance(distance, (int, float)) and distance > 0:
+            lines.append(f"    距离约 {int(distance)} 米")
+        if store.get("beCode"):
+            lines.append(f"    beCode：{store['beCode']}（外送等场景点单需要）")
     return "\n".join(lines)
 
 

@@ -1,14 +1,19 @@
 """orderflow 层与 ``order stores/menu`` 命令测试：fixture 真值 + 假 client，不触网。
 
-fixture 真值（2026-10-10 实录；1450330 已停业，菜单取自 stores 结果中的
-1450244 麦当劳上海延安西路地铁站餐厅）：
-- stores.json：query-nearby-stores（beType=1/searchType=1/city=上海/keyword=陆家嘴）
-  返回 2 家店；data[0] = 1450244 / 麦当劳上海延安西路地铁站餐厅 /
-  上海轨道交通三号线延安西路站3-108；beType=1 到店自取门店无 beCode；
+fixture 真值（2026-10-10 实录）：
+- stores.json：query-nearby-stores（beType=1/searchType=2 位置搜索/city=上海/
+  keyword=陆家嘴）返回 5 家陆家嘴门店；data[0] = 1450127 /
+  麦当劳上海陆家嘴明珠环餐厅 / 世纪大道55号2F-1室 / distance 75；beType=1
+  门店的 beCode 为 null → 解析后不保留该键；
 - meals.json：query-meals（beType=1/orderType=1/storeCode=1450244）返回
   15 个分类、136 个分类条目、124 个唯一编码；data.meals[code] 详情映射中
   9900005456 = 麦辣鸡腿汉堡三件套（currentPrice "33.5"，分类"鸡肉汉堡/卷"），
   4810 = 薯条（"13.5"，分类"小食甜品/其他"，tags ["小食"]）。
+
+searchType 探测结论（实录）：1=收藏餐厅（与 keyword 无关）、2=按城市+关键词
+位置搜索（真正过滤）、3=需经纬度被拒、0=等同收藏。故 stores 调用用 2。
+beCode 直传验证（实录，得来速门店 1450214）：query-meals beType=5 带
+beCode=145021441 成功，不带被拒"外送场景下，beType=2/5/6时必传beCode"。
 """
 
 import json
@@ -71,13 +76,23 @@ def menu(meals_raw):
 def test_parse_stores_keeps_real_fields(stores_raw):
     stores = parse_stores(stores_raw)
 
-    assert len(stores) == 2
+    assert len(stores) == 5
     first = stores[0]
-    assert first["storeCode"] == "1450244"
-    assert first["storeName"] == "麦当劳上海延安西路地铁站餐厅"
-    assert first["address"] == "上海轨道交通三号线延安西路站3-108"
-    # beType=1（到店自取）门店没有 beCode：不造空字段
+    assert first["storeCode"] == "1450127"
+    assert first["storeName"] == "麦当劳上海陆家嘴明珠环餐厅"
+    assert first["address"] == "世纪大道55号2F-1室"
+    assert first["distance"] == 75  # searchType=2 位置搜索带真实距离（米）
+    # beType=1（到店取餐）门店的 beCode 是 null：不造空字段
     assert "beCode" not in first
+
+
+def test_parse_stores_keeps_becode_when_present():
+    # 得来速/外送门店带 beCode（实录形态：query-nearby-stores beType=5）
+    stores = parse_stores(
+        {"data": [{"storeCode": "1450214", "storeName": "某得来速餐厅", "beCode": "145021441"}]}
+    )
+
+    assert stores[0]["beCode"] == "145021441"
 
 
 def test_parse_meals_real_items(meals_raw):
@@ -169,6 +184,26 @@ def test_load_menu_delivery_mode_uses_own_cache_file(meals_raw, tmp_path):
     assert not (tmp_path / "menu_cache_1450244_pickup.json").exists()
 
 
+def test_load_menu_becode_passthrough(meals_raw, tmp_path):
+    # 外送/得来速场景必传 beCode（实录验证）：给出即透传，缺省不带该键
+    fake = _FakeClient(meals_raw)
+
+    load_menu(fake, "1450214", 2, 2, tmp_path, be_code="145021441")
+
+    assert fake.calls == [
+        (
+            MEALS_TOOL,
+            {
+                "storeCode": "1450214",
+                "beType": 2,
+                "orderType": 2,
+                "beCode": "145021441",
+            },
+        )
+    ]
+    assert (tmp_path / "menu_cache_1450214_delivery.json").is_file()
+
+
 def test_load_menu_corrupt_cache_refetches(meals_raw, tmp_path):
     (tmp_path / "menu_cache_1450244_pickup.json").write_text("not json", encoding="utf-8")
     fake = _FakeClient(meals_raw)
@@ -252,6 +287,25 @@ def test_meal_detail_passthrough():
     ]
 
 
+def test_meal_detail_becode_passthrough():
+    fake = _FakeClient({"success": True, "data": {}})
+
+    meal_detail(fake, "1450214", 2, 2, "9900005456", be_code="145021441")
+
+    assert fake.calls == [
+        (
+            MEAL_DETAIL_TOOL,
+            {
+                "storeCode": "1450214",
+                "beType": 2,
+                "orderType": 2,
+                "code": "9900005456",
+                "beCode": "145021441",
+            },
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # CLI：order stores / order menu
 # ---------------------------------------------------------------------------
@@ -265,12 +319,13 @@ def test_cli_order_stores(stores_raw, capsys, monkeypatch):
     assert fake.calls == [
         (
             STORES_TOOL,
-            {"beType": 1, "searchType": 1, "city": "上海", "keyword": "陆家嘴"},
+            {"beType": 1, "searchType": 2, "city": "上海", "keyword": "陆家嘴"},
         )
     ]
     out = capsys.readouterr().out
-    assert "麦当劳上海延安西路地铁站餐厅" in out
-    assert "1450244" in out
+    assert "麦当劳上海陆家嘴明珠环餐厅" in out
+    assert "1450127" in out
+    assert "75" in out  # 距离（米）也展示
 
     # --json：可解析、count 正确、中文不转义
     assert cli.main(
@@ -278,8 +333,8 @@ def test_cli_order_stores(stores_raw, capsys, monkeypatch):
     ) == 0
     captured = capsys.readouterr().out
     payload = json.loads(captured)
-    assert payload["count"] == 2
-    assert payload["stores"][0]["storeCode"] == "1450244"
+    assert payload["count"] == 5
+    assert payload["stores"][0]["storeCode"] == "1450127"
     assert "\\u" not in captured
 
 
@@ -310,6 +365,30 @@ def test_cli_order_menu_pickup_with_cache(meals_raw, capsys, monkeypatch, tmp_pa
     assert payload["mode"] == "pickup"
     assert payload["count"] == 136
     assert payload["items"][0]["code"]
+
+
+def test_cli_order_menu_delivery_becode(meals_raw, capsys, monkeypatch, tmp_path):
+    fake = _FakeClient(meals_raw)
+    monkeypatch.setattr(cli, "McpClient", lambda: fake)
+    monkeypatch.setattr(cli, "MENU_CACHE_DIR", tmp_path)
+
+    assert (
+        cli.main(
+            ["order", "menu", "--store", "1450214", "--mode", "delivery", "--be-code", "145021441"]
+        )
+        == 0
+    )
+    assert fake.calls == [
+        (
+            MEALS_TOOL,
+            {
+                "storeCode": "1450214",
+                "beType": 2,
+                "orderType": 2,
+                "beCode": "145021441",
+            },
+        )
+    ]
 
 
 def test_cli_order_menu_bad_mode_usage_error(capsys):

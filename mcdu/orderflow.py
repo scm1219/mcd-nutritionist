@@ -10,8 +10,9 @@
 
 就餐参数约定：``beType`` 1=到店取餐 / 2=麦乐送；``orderType`` 1=到店 / 2=外送；
 CLI 层的 mode 字符串 ``pickup|delivery`` 由 :data:`MODE_BE_TYPES` /
-:data:`MODE_ORDER_TYPES` 映射到这对整数。beType=1 的门店没有 beCode，所有
-调用都不传 beCode。
+:data:`MODE_ORDER_TYPES` 映射到这对整数。beType=1（到店取餐）不传 beCode；
+外送等场景服务端必传 beCode（来自门店查询结果的同名字段），因此
+:func:`load_menu` / :func:`meal_detail` 提供可选 ``be_code`` 参数透传。
 """
 
 from __future__ import annotations
@@ -186,11 +187,13 @@ def load_menu(
     be_type: int,
     order_type: int,
     cache_dir: Path,
+    be_code: str | None = None,
 ) -> list[MenuItem]:
     """取门店菜单：缓存新鲜（< 10 分钟）直接用，否则调 MCP 并写缓存。
 
     缓存文件 ``menu_cache_{store}_{mode}.json`` 存原始工具返回（每次读取后
-    重新解析，缓存内容即真实数据）。需要联网重取而 ``client`` 为 None
+    重新解析，缓存内容即真实数据）。``be_code`` 非 None 时随调用透传
+    （外送等场景服务端必传）；需要联网重取而 ``client`` 为 None
     （未配置 Token）时报业务错误。
     """
     path = menu_cache_path(cache_dir, store_code, mode_of_be_type(be_type))
@@ -205,9 +208,10 @@ def load_menu(
             "菜单缓存不可用且缺少 MCD_MCP_TOKEN，无法联网获取菜单"
             "（Token 请到 open.mcd.cn/mcp 申请，写入 .env）",
         )
-    raw = client.call_tool(
-        MEALS_TOOL, {"storeCode": store_code, "beType": be_type, "orderType": order_type}
-    )
+    arguments: dict = {"storeCode": store_code, "beType": be_type, "orderType": order_type}
+    if be_code is not None:
+        arguments["beCode"] = be_code
+    raw = client.call_tool(MEALS_TOOL, arguments)
     if not isinstance(raw, dict):
         raise McduError("RESPONSE", f"query-meals 返回结构异常：{raw!r}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -270,19 +274,25 @@ def resolve_items(
 
 
 def meal_detail(
-    client: "McpClient", store_code: str, be_type: int, order_type: int, code: str
+    client: "McpClient",
+    store_code: str,
+    be_type: int,
+    order_type: int,
+    code: str,
+    be_code: str | None = None,
 ) -> dict:
     """查询餐品/套餐详情（选配轮次、特调选项），原样返回工具结果。
 
-    beType=1（到店取餐）不得传 beCode，这里也只传四项必填参数。
+    beType=1（到店取餐）不得传 beCode；外送等场景必传时经 ``be_code``
+    透传（来自门店查询结果）。
     """
-    result = client.call_tool(
-        MEAL_DETAIL_TOOL,
-        {
-            "storeCode": str(store_code),
-            "beType": be_type,
-            "orderType": order_type,
-            "code": str(code),
-        },
-    )
+    arguments: dict = {
+        "storeCode": str(store_code),
+        "beType": be_type,
+        "orderType": order_type,
+        "code": str(code),
+    }
+    if be_code is not None:
+        arguments["beCode"] = be_code
+    result = client.call_tool(MEAL_DETAIL_TOOL, arguments)
     return result if isinstance(result, dict) else {"data": result}
