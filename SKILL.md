@@ -47,7 +47,8 @@ python cli.py extras claim --yes-claim [--json]
 ```
 
 要点：点单写法支持 `巨无霸x2` / `2个巨无霸`，逗号分隔多项；`--mode delivery`
-（麦乐送）需要 `--be-code`（来自 `order stores` 输出）与 `--address-id`；
+（麦乐送）需要 `--be-code`（来自 `order stores` 输出）；外送下单草稿还需
+`--address-id`（仅 `order draft` 有此旗标，`suggest` 没有）；
 `--daily-kcal` / `--daily-sodium` 是每日参考基准（默认 2000 kcal / 2000 mg 钠）。
 
 ### 每个命令的触发意图与输出解读
