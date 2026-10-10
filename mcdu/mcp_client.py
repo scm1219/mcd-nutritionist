@@ -20,6 +20,9 @@ import requests
 
 TOKEN_ENV_VAR = "MCD_MCP_TOKEN"
 
+#: 仓库根的 .env（mcdu/ 包的上一级），load_token 的回退读取位置
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
 AUTH_ERROR_MESSAGE = "Token 无效或过期，请到 open.mcd.cn/mcp 重新申请"
 
 #: 429 退避基数：第 n 次重试前睡 BACKOFF_BASE_SECONDS * 2**n（0.5/1/2s）
@@ -63,16 +66,15 @@ def parse_env_file(path: str) -> dict[str, str]:
 
 
 def load_token() -> str:
-    """读取 Bearer Token：环境变量 ``MCD_MCP_TOKEN`` 优先，其次 ``.env``（仓库根运行时即仓库根 ``.env``）。
+    """读取 Bearer Token：环境变量 ``MCD_MCP_TOKEN`` 优先，其次仓库根 ``.env``（``ENV_FILE``）。
 
     :raises McduError: 两处都未配置时。
     """
     token = os.environ.get(TOKEN_ENV_VAR, "").strip()
     if token:
         return token
-    env_path = Path.cwd() / ".env"
-    if env_path.is_file():
-        token = parse_env_file(str(env_path)).get(TOKEN_ENV_VAR, "").strip()
+    if ENV_FILE.is_file():
+        token = parse_env_file(str(ENV_FILE)).get(TOKEN_ENV_VAR, "").strip()
         if token:
             return token
     raise McduError(

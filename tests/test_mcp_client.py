@@ -57,7 +57,8 @@ def test_parse_original_response():
 
 def test_load_token_missing(monkeypatch, tmp_path):
     monkeypatch.delenv("MCD_MCP_TOKEN", raising=False)
-    monkeypatch.chdir(tmp_path)  # 无 .env 的工作目录
+    # 指到不存在的 .env：仓库根可能真实存在含 Token 的 .env，测试不得读到它
+    monkeypatch.setattr("mcdu.mcp_client.ENV_FILE", tmp_path / ".env")
     with pytest.raises(McduError):
         load_token()
 
