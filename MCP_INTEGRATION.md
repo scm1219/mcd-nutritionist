@@ -61,3 +61,31 @@ calculate-price 同样的 beCode 传递规则：beType=1 不传，外送/得来�
 返回 `data[]`：`couponId`（展示/下单用）/`couponCode`/`title`/`products[]`
 （`productCode` + `productName`）/`tradeDateTime`（有效期）。后续做"组合可用券"
 时，couponId/couponCode 可直接塞进 calculate-price 的 items 条目试算。
+
+## extras 快查工具（Task 10 只读实录，2026-10-10）
+
+**query-my-account** 入参 `{}`；返回 `data` 标量字段集，值多为**字符串数字**：
+`availablePoint`（可用积分，如 `"29"`）/`accumulativePoint`/`usedPoint`/
+`expiredPoint`/`frozenPoint`/`nextMouthExpirePoint`/`currency`（"麦享会积分"）/
+`accountId`。代码消费方：`scripts/extras.py:extract_points`（字符串数字统一转
+数值，锚定 `tests/test_extras.py::test_extract_points_parses_numeric_string`）。
+
+**query-my-coupons** 入参 `{"page": "1", "pageSize": "20"}`（字符串页码）；
+返回 `data.coupons[]` + 分页键 `totalCount/currentPage/pageSize/totalPages`
+（本次账户无券，条目字段未实录——券名按 couponName 探测）。
+
+**available-coupons** 入参 `{}`；返回 `data[]` 直接是列表：
+`couponName`/`couponImage`（URL，渲染不展示）/`couponStatus`（"CAN_GET"）/
+`label`（"可领取"）。
+
+**campaign-calendar** 入参 `{"specifiedDate": "YYYY-MM-DD"}`；返回
+`data.dailyList[]`：`date`/`dateText`（"2026年10月10日 今日"）/`today`（bool）/
+`events[]`。事件字段：`activityCode`/`activityTitle`（**实测常为空串**，真实
+标题在 `articleDto.title`，内容在 `articleDto.content`）/`price`（字符串，
+实测恒 "0"）+ `priceSuffix`（"起"）/`activityTag`/`button.text`（"提醒我"）。
+响应含昨日（"往期回顾"）、当日、次日三组。活动标题常带 emoji，Windows GBK
+控制台直打有 UnicodeEncodeError 风险（同 Task 4 已记录的 deferred 项）。
+
+**auto-bind-coupons** 写操作（一键领取全部可领券），入参 `{}`；**未实录**
+（真实领券后回填返回形状），CLI 侧已用 `--yes-claim` 安全门拦截。
+

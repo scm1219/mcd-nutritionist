@@ -20,6 +20,10 @@
     python cli.py order confirm --draft-id ID --yes-place-order [--json]
     python cli.py order status --order-id ID [--json]
     python cli.py order cancel --order-id ID --reason CODE --yes-cancel [--json]
+    python cli.py extras coupons [--json]
+    python cli.py extras points [--json]
+    python cli.py extras campaigns [--json]
+    python cli.py extras claim --yes-claim [--json]
 """
 
 from __future__ import annotations
@@ -40,6 +44,14 @@ from mcdu.orderflow import (
 )
 from mcdu.render import EXIT_BUSINESS, EXIT_OK, EXIT_USAGE, emit, fail
 from scripts.analyze import build_analysis, render_human
+from scripts.extras import (
+    claim_coupons,
+    fetch_campaigns,
+    fetch_coupons,
+    fetch_points,
+    render_claim,
+    render_claim_preview,
+)
 from scripts.history import (
     TOOL_NAME as ORDER_LIST_TOOL,
     render_human as render_history,
@@ -267,6 +279,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     order_cancel.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     order_cancel.set_defaults(handler=cmd_order_cancel)
+
+    extras = subparsers.add_parser("extras", help="券/积分/活动日历快查与一键领券")
+    extras_sub = extras.add_subparsers(dest="extras_command", required=True, metavar="子命令")
+
+    extras_coupons = extras_sub.add_parser(
+        "coupons", help="我的券 + 可领券合并查询（只读）"
+    )
+    extras_coupons.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    extras_coupons.set_defaults(handler=cmd_extras_coupons)
+
+    extras_points = extras_sub.add_parser("points", help="账户积分查询（只读）")
+    extras_points.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    extras_points.set_defaults(handler=cmd_extras_points)
+
+    extras_campaigns = extras_sub.add_parser("campaigns", help="当日活动日历（只读）")
+    extras_campaigns.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    extras_campaigns.set_defaults(handler=cmd_extras_campaigns)
+
+    extras_claim = extras_sub.add_parser(
+        "claim", help="一键领取可领券（auto-bind-coupons，需 --yes-claim）"
+    )
+    extras_claim.add_argument(
+        "--yes-claim",
+        action="store_true",
+        help="安全门：确认真实领券（写操作）；缺省时只打印将执行的动作并退出",
+    )
+    extras_claim.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    extras_claim.set_defaults(handler=cmd_extras_claim)
     return parser
 
 
@@ -608,6 +648,63 @@ def cmd_order_cancel(args: argparse.Namespace) -> int:
         render_order_cancelled(args.order_id, raw),
         args.json,
     )
+    return EXIT_OK
+
+
+def cmd_extras_coupons(args: argparse.Namespace) -> int:
+    """extras coupons：合并 query-my-coupons + available-coupons（只读）。"""
+    try:
+        client = McpClient()
+        payload, human = fetch_coupons(client)
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(payload, human, args.json)
+    return EXIT_OK
+
+
+def cmd_extras_points(args: argparse.Namespace) -> int:
+    """extras points：query-my-account 透传（只读）。"""
+    try:
+        client = McpClient()
+        payload, human = fetch_points(client)
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(payload, human, args.json)
+    return EXIT_OK
+
+
+def cmd_extras_campaigns(args: argparse.Namespace) -> int:
+    """extras campaigns：campaign-calendar（specifiedDate=当日，只读）。"""
+    try:
+        client = McpClient()
+        payload, human = fetch_campaigns(client)
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(payload, human, args.json)
+    return EXIT_OK
+
+
+def cmd_extras_claim(args: argparse.Namespace) -> int:
+    """extras claim：（安全门）→ auto-bind-coupons（写操作）。
+
+    与 order confirm/cancel 同一安全边界：未加 ``--yes-claim`` 时先打印
+    将执行的动作（stdout），再由 :func:`require_yes` 拒绝（退出码 1），
+    **绝不**触碰 auto-bind-coupons。
+    """
+    if not args.yes_claim:
+        print(render_claim_preview())
+    require_yes(args.yes_claim, "一键领券（auto-bind-coupons）")
+
+    try:
+        client = McpClient()
+        payload, human = claim_coupons(client)
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    emit(payload, human, args.json)
     return EXIT_OK
 
 
