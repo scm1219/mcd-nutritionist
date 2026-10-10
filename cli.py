@@ -14,6 +14,9 @@
     python cli.py order stores --city 上海 --keyword 陆家嘴 [--json]
     python cli.py order menu --store CODE [--mode pickup|delivery]
         [--be-code BECODE] [--json]
+    python cli.py order draft --store CODE [--mode pickup|delivery]
+        --items "双层吉士汉堡x1,中薯条x1" [--coupon ID] [--address-id ID]
+        [--no-tableware] [--be-code BECODE] [--json]
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from mcdu.orderflow import (
     MODE_BE_TYPES,
     MODE_ORDER_TYPES,
     STORES_TOOL,
+    DraftStore,
     load_menu,
     parse_stores,
 )
@@ -39,8 +43,14 @@ from scripts.history import (
     summarize as summarize_history,
 )
 from scripts.order import (
+    ADDRESSES_TOOL,
+    build_draft,
+    build_draft_payload,
     build_menu_payload,
     build_stores_payload,
+    parse_addresses,
+    render_address_choices,
+    render_draft,
     render_menu,
     render_stores,
 )
@@ -61,6 +71,8 @@ CACHE_PATH = REPO_ROOT / "data" / "nutrition_cache.json"
 ALIASES_PATH = REPO_ROOT / "aliases.json"
 #: 门店菜单缓存目录（菜单缓存文件 menu_cache_{store}_{mode}.json 落在这里）
 MENU_CACHE_DIR = REPO_ROOT / "data"
+#: 下单草稿目录（draft_{id}.json 落在这里，30 分钟 TTL）
+DRAFT_DIR = REPO_ROOT / "data"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -158,6 +170,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     order_menu.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     order_menu.set_defaults(handler=cmd_order_menu)
+
+    order_draft = order_sub.add_parser(
+        "draft", help="生成下单草稿（算价+营养预览，绝不真实下单）"
+    )
+    order_draft.add_argument("--store", required=True, help="门店编码 storeCode（见 order stores）")
+    order_draft.add_argument(
+        "--mode",
+        choices=list(MODE_BE_TYPES),
+        default="pickup",
+        help="取餐方式：pickup=到店取餐（默认）/ delivery=麦乐送（需 --address-id 与 --be-code）",
+    )
+    order_draft.add_argument(
+        "--items",
+        required=True,
+        help='点单内容，逗号分隔，如 "双层吉士汉堡x1,中薯条x1"',
+    )
+    order_draft.add_argument(
+        "--coupon", default=None, help="优惠券 ID（透传 calculate-price 试算优惠）"
+    )
+    order_draft.add_argument(
+        "--address-id",
+        default=None,
+        help="配送地址 ID（delivery 必填；缺省时列出可用地址供选择后退出）",
+    )
+    order_draft.add_argument(
+        "--be-code",
+        default=None,
+        help="业务编码 beCode：delivery（麦乐送）等场景必传，来自门店查询结果"
+        "（order stores 输出的 beCode 字段）",
+    )
+    order_draft.add_argument(
+        "--no-tableware",
+        dest="need_tableware",
+        action="store_false",
+        help="不需要餐具（默认需要）",
+    )
+    order_draft.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    order_draft.set_defaults(handler=cmd_order_draft)
     return parser
 
 
@@ -352,6 +402,76 @@ def cmd_order_menu(args: argparse.Namespace) -> int:
     emit(
         build_menu_payload(args.store, args.mode, items),
         render_menu(args.store, args.mode, items),
+        args.json,
+    )
+    return EXIT_OK
+
+
+def cmd_order_draft(args: argparse.Namespace) -> int:
+    """order draft：菜单定位 → 套餐默认组成 → 算价 → 营养 → 落盘草稿。
+
+    全程只调只读工具（query-meals/query-meal-detail/calculate-price/
+    delivery-query-addresses），**绝不调用 create-order**。外送未给
+    ``--address-id`` 时列出可用地址并以业务错误退出（退出码 1）。
+    """
+    try:
+        entries = parse_items_arg(args.items)
+    except ValueError as exc:
+        fail(f"参数错误：{exc}", EXIT_USAGE)
+    if not entries:
+        fail(
+            '参数错误：--items 不能为空，如 --items "双层吉士汉堡x1,中薯条x1"',
+            EXIT_USAGE,
+        )
+
+    # 算价必须联网：草稿流程没有纯缓存回退
+    try:
+        client = McpClient()
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    if args.mode == "delivery" and not args.address_id:
+        try:
+            addresses = parse_addresses(client.call_tool(ADDRESSES_TOOL, {}))
+        except McduError as exc:
+            fail(exc.message, EXIT_BUSINESS)
+        fail(render_address_choices(addresses), EXIT_BUSINESS)
+
+    try:
+        table = _load_table()
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+    aliases = load_aliases(ALIASES_PATH) if ALIASES_PATH.is_file() else {}
+
+    try:
+        draft, combos, display = build_draft(
+            client,
+            table,
+            args.store,
+            args.mode,
+            entries,
+            address_id=args.address_id,
+            be_code=args.be_code,
+            coupon_id=args.coupon,
+            need_tableware=args.need_tableware,
+            cache_dir=MENU_CACHE_DIR,
+            aliases=aliases,
+        )
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+    except ValueError as exc:  # 菜单找不到点单项 / 坏 mode
+        fail(str(exc), EXIT_BUSINESS)
+
+    DraftStore(DRAFT_DIR).save(draft)
+    emit(
+        build_draft_payload(
+            draft, display, combos,
+            need_tableware=args.need_tableware, coupon_id=args.coupon,
+        ),
+        render_draft(
+            draft, display, combos,
+            need_tableware=args.need_tableware, coupon_id=args.coupon,
+        ),
         args.json,
     )
     return EXIT_OK

@@ -6,7 +6,13 @@
 - :func:`load_menu`：门店菜单的 10 分钟 TTL 文件缓存
   （``menu_cache_{store}_{mode}.json``，mode 由 beType 反查 ``pickup|delivery``）；
 - :func:`resolve_items`：点单名 → 菜单编码的纯名称匹配（精确 → 包含），不触网；
-- :func:`meal_detail`：套餐详情的薄封装，供 Task 8 换餐/特调使用。
+- :func:`meal_detail`：套餐详情的薄封装，供 Task 8 换餐/特调使用；
+- :class:`Draft` / :class:`DraftStore`：下单草稿的落盘与 30 分钟 TTL 读取
+  （草稿文件 ``draft_{id}.json``，过期即删）。
+
+安全边界：本模块与草稿相关的封装**只覆盖只读工具**（query-meals /
+query-meal-detail / calculate-price），create-order 属 Task 9 的 confirm
+命令且必须经 ``--yes-place-order`` 安全门，绝不出现在草稿流程里。
 
 就餐参数约定：``beType`` 1=到店取餐 / 2=麦乐送；``orderType`` 1=到店 / 2=外送；
 CLI 层的 mode 字符串 ``pickup|delivery`` 由 :data:`MODE_BE_TYPES` /
@@ -20,7 +26,7 @@ from __future__ import annotations
 import difflib
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +44,9 @@ MEAL_DETAIL_TOOL = "query-meal-detail"
 
 #: 菜单缓存 TTL（秒）：缓存期内不得二次调用 MCP
 MENU_TTL_SECONDS = 10 * 60
+
+#: 下单草稿 TTL（秒）：30 分钟（全局约束）
+DRAFT_TTL_SECONDS = 30 * 60
 
 #: mode 字符串 → beType（1=到店取餐 / 2=麦乐送）
 MODE_BE_TYPES: dict[str, int] = {"pickup": 1, "delivery": 2}
@@ -296,3 +305,74 @@ def meal_detail(
         arguments["beCode"] = be_code
     result = client.call_tool(MEAL_DETAIL_TOOL, arguments)
     return result if isinstance(result, dict) else {"data": result}
+
+
+# ---------------------------------------------------------------------------
+# 下单草稿（Task 8）：Draft 数据 + 30 分钟 TTL 落盘
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Draft:
+    """一份下单草稿：items 是完整 create-order items（不含门店级参数）。
+
+    营养合计（``analysis``）与算价结果（``price``）内联保存，confirm 时
+    直接复用；门店级参数（storeCode/beType/orderType/beCode 等）由
+    ``mode`` / ``store_code`` 及 confirm 阶段的旗标重建。
+    """
+
+    draft_id: str
+    created_at: float
+    mode: str
+    store_code: str
+    items: list[dict]
+    address_id: str | None
+    analysis: dict
+    price: dict
+
+
+class DraftStore:
+    """草稿文件仓：``{dir}/draft_{id}.json``，TTL 30 分钟。
+
+    ``load`` 对过期草稿返回 None 并删除文件（confirm 的安全门依赖这一
+    语义：过期草稿不可能被读回下单）；不存在/损坏同样返回 None。
+    """
+
+    def __init__(self, dir: Path, ttl_seconds: int = DRAFT_TTL_SECONDS):
+        self.dir = Path(dir)
+        self.ttl_seconds = ttl_seconds
+
+    def save(self, draft: Draft) -> None:
+        """草稿写盘（``draft_{id}.json``，UTF-8、中文不转义）。"""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._path(draft.draft_id).write_text(
+            json.dumps(asdict(draft), ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+
+    def load(self, draft_id: str) -> Draft | None:
+        """按 id 读草稿；过期/不存在/损坏 → None（过期文件顺手删除）。"""
+        path = self._path(draft_id)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            draft = Draft(
+                draft_id=str(payload["draft_id"]),
+                created_at=float(payload["created_at"]),
+                mode=str(payload["mode"]),
+                store_code=str(payload["store_code"]),
+                items=list(payload["items"]),
+                address_id=payload.get("address_id"),
+                analysis=dict(payload["analysis"]),
+                price=dict(payload["price"]),
+            )
+        except (OSError, ValueError, TypeError, KeyError):
+            return None  # 损坏视同没有（draft_id 为随机 hex，几乎不可能复用）
+        if time.time() - draft.created_at >= self.ttl_seconds:
+            path.unlink(missing_ok=True)
+            return None
+        return draft
+
+    def _path(self, draft_id: str) -> Path:
+        return self.dir / f"draft_{draft_id}.json"
