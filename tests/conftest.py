@@ -1,6 +1,7 @@
-"""共享测试夹具：可编程的假 requests.Session。"""
+"""共享测试夹具：可编程的假 requests.Session、由 fixture 构建的营养假表。"""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -64,3 +65,20 @@ class FakeSession:
 @pytest.fixture
 def fake_session():
     return FakeSession()
+
+
+@pytest.fixture(scope="session")
+def fake_table():
+    """由 fixture 真实数据构建的 NutritionTable（160 项，不联网）。
+
+    tests/fixtures/nutrition_raw.txt 是 list-nutrition-foods 的完整工具输出，
+    这里复用 Task 1 的信封解包 + Task 2 的 CSV 解析拿到条目。
+    """
+    from mcdu.mcp_client import parse_original_response
+    from mcdu.nutrition import NutritionTable, parse_nutrition_data
+
+    fixture = Path(__file__).parent / "fixtures" / "nutrition_raw.txt"
+    envelope = json.loads(fixture.read_text(encoding="utf-8"))
+    text = envelope["result"]["content"][0]["text"]
+    data = parse_original_response(text)["data"]
+    return NutritionTable(parse_nutrition_data(data), "2026-10-10T00:00:00+00:00")
