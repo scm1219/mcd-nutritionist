@@ -1,7 +1,7 @@
 """麦当劳 MCP（open.mcd.cn/mcp 申请 Token）的无状态 JSON-RPC 客户端。
 
 约定：
-- 端点 ``https://mcd.mcd.cn``，Bearer Token 鉴权，超时 15s。
+- 端点 ``https://mcp.mcd.cn``，Bearer Token 鉴权，超时 15s。
 - 401 不重试，直接报清晰错误；429 指数退避（0.5/1/2s）重试，耗尽报限流错误。
 - 响应可能是普通 JSON，也可能是 SSE（``event:`` 开头），后者取首个 ``data:`` 行。
 - 工具输出的业务对象在 ``result.structuredContent``；若只有 markdown 文本，

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""麦麦营养师 CLI：argparse 子命令骨架，已注册 ``analyze`` 与 ``history``。
+"""麦麦营养师 CLI：argparse 子命令骨架，已注册 ``analyze``/``suggest``/
+``history``/``order``（stores/menu/draft/confirm/status/cancel）/
+``extras``（coupons/points/campaigns/claim）。
 
 各子命令处理函数模式统一：构造 payload → ``emit(payload, render_human(...), args.json)``
 → ``return EXIT_OK``；错误一律走 ``fail``（stderr + 退出码 1 业务 / 2 参数）。
@@ -576,6 +578,8 @@ def cmd_order_confirm(args: argparse.Namespace) -> int:
     顺序即安全边界：先确认草稿存在且未过期（否则退出 1 并提示重新
     draft），再过 ``--yes-place-order`` 安全门，最后才构造 client 下单。
     下单参数全部读自草稿本体（单一事实源），失败时草稿保留可重试。
+    下单成功后的流水写入与删草稿均为 best-effort：失败仅 stderr 警告，
+    草稿删除不依赖流水成功（防重试造成二次下单）。
     """
     draft_store = DraftStore(DRAFT_DIR)
     draft = draft_store.load(args.draft_id)
@@ -602,8 +606,22 @@ def cmd_order_confirm(args: argparse.Namespace) -> int:
         fail(exc.message, EXIT_BUSINESS)
 
     order_id = extract_order_id(raw)
-    append_orders_log(ORDERS_LOG_PATH, draft.draft_id, order_id, raw)
-    draft_store.delete(draft.draft_id)
+    try:
+        append_orders_log(ORDERS_LOG_PATH, draft.draft_id, order_id, raw)
+    except OSError as err:  # 订单已在服务端创建，流水失败只警告、不中断
+        print(
+            f"订单已创建（{order_id}），但本地订单记录写入失败：{err}；"
+            "草稿仍将删除，请勿重复下单",
+            file=sys.stderr,
+        )
+    try:
+        draft_store.delete(draft.draft_id)
+    except OSError as err:  # 删草稿失败不遮蔽订单号输出，但必须警告
+        print(
+            f"警告：草稿 {draft.draft_id} 删除失败（{err}），"
+            "请手动删除该草稿文件以防重复下单",
+            file=sys.stderr,
+        )
     emit(
         build_confirm_output(draft.draft_id, order_id, raw),
         render_order_created(draft.draft_id, order_id, raw),

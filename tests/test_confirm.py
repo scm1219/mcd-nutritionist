@@ -291,6 +291,30 @@ def test_confirm_appends_to_existing_log(capsys, monkeypatch, tmp_path):
     assert log[1]["draft_id"] == "abcd1234"
 
 
+def test_confirm_log_write_oserror_still_deletes_draft(capsys, monkeypatch, tmp_path):
+    """流水写入 OSError：订单已真实创建 → 退出码 0、stderr 警告含订单号、
+    草稿仍删除（重试 confirm 不会二次下单）、无 traceback、订单号照常输出。"""
+    fake = FakeOrderClient()
+    _patch_cli(monkeypatch, tmp_path, fake)
+    _save_draft(tmp_path)
+
+    def _boom(path, draft_id, order_id, raw):
+        raise OSError("磁盘已满（模拟）")
+
+    monkeypatch.setattr(cli, "append_orders_log", _boom)
+
+    assert (
+        cli.main(["order", "confirm", "--draft-id", "abcd1234", "--yes-place-order"]) == 0
+    )
+
+    captured = capsys.readouterr()
+    assert "ORD20261010001" in captured.err  # 警告必须带订单号
+    assert "请勿重复下单" in captured.err
+    assert "Traceback" not in captured.err  # 不给用户裸 traceback
+    assert not (tmp_path / "draft_abcd1234.json").exists()  # 草稿删除不依赖流水成功
+    assert "ORD20261010001" in captured.out  # 订单号输出不被警告遮蔽
+
+
 def test_confirm_create_failure_keeps_draft_and_no_log(capsys, monkeypatch, tmp_path):
     """create-order 业务失败：退出 1、草稿保留（可重试）、不写 orders_log。"""
     fake = FailingCreateClient()
