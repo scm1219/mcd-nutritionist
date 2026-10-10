@@ -51,6 +51,40 @@ def test_classify():
     assert classify("麦满分配奶茶") == "main"
 
 
+def test_classify_drink_juice_regression():
+    """真实数据回归（评审授权的关键词表偏离）：裸"汁"子串会把蜜汁/脆汁鸡
+    类餐食误判成饮品，曾占满饮品候选前 12；修正为词尾锚定"汁" + 整词
+    "美汁源"后，7 项餐食落 other，2 个真果汁仍是 drink。"""
+    for name in (
+        "麦麦脆汁鸡-琵琶腿",
+        "麦麦脆汁鸡-带骨里脊",
+        "蜜汁BBQ风味薄皮脆汁鸡-带骨里脊",
+        "蜜汁BBQ风味薄皮脆汁鸡-琵琶腿",
+        "蒜了吧黄油风味薄皮脆汁鸡-琵琶腿",
+        "蒜了吧黄油风味薄皮脆汁鸡-带骨里脊",
+        "蜜汁快乐",
+    ):
+        assert classify(name) == "other", name
+    # 真果汁仍是饮品："100%苹果汁"以汁结尾；美汁源不以汁结尾，靠整词命中
+    assert classify("100%苹果汁") == "drink"
+    assert classify("【美汁源】“黄金橙橙”") == "drink"
+
+
+def test_drink_candidates_exclude_food(fake_table):
+    """由 fixture 全表验证：饮品类候选不再含蜜汁/脆汁鸡类餐食。"""
+    drinks = [i.name for i in fake_table.items if classify(i.name) == "drink"]
+    assert drinks  # 真饮品仍在（可乐/咖啡/牛奶/茶…）
+    for name in drinks:
+        assert "脆汁鸡" not in name, name
+        assert not name.startswith("蜜汁"), name
+    # 曾被误判的 7 项现在全部不在饮品类
+    assert "蜜汁快乐" not in drinks
+    assert "麦麦脆汁鸡-琵琶腿" not in drinks
+    # 两个真果汁仍在饮品类
+    assert "100%苹果汁" in drinks
+    assert "【美汁源】“黄金橙橙”" in drinks
+
+
 def test_combo_respects_kcal_cap(fake_table):
     combos = suggest_combos(fake_table, max_kcal=600, top=10)
 

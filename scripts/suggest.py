@@ -26,22 +26,36 @@ CANDIDATE_LIMIT = 12
 #: totals 的字段与顺序（与 analyze/history 一致）
 _TOTAL_FIELDS = ("energy_kcal", "protein_g", "fat_g", "carb_g", "sodium_mg", "calcium_mg")
 
-#: classify 规则（按序，命中即返回）：品类 → 关键词组
+#: classify 规则（按序，命中即返回）：品类 → 关键词组。饮品词里的"美汁源"
+#: 是果汁品牌整词（补上不以"汁"结尾的【美汁源】"黄金橙橙"）。
 _CLASSIFY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("main", ("汉堡", "麦满分", "卷", "堡", "三明治")),
     ("side", ("薯条", "麦乐鸡", "派", "玉米", "鸡翅", "鸡块")),
     (
         "drink",
-        ("可乐", "雪碧", "芬达", "咖啡", "拿铁", "卡布", "奶", "茶", "汁", "水", "特饮"),
+        ("可乐", "雪碧", "芬达", "咖啡", "拿铁", "卡布", "奶", "茶", "美汁源", "水", "特饮"),
     ),
 )
 
+#: 饮品的词尾关键词：仅匹配名称结尾（评审授权对计划关键词表的偏离）。
+#: 裸"汁"子串会把"蜜汁/脆汁鸡"类餐食误判成饮品（麦麦脆汁鸡、蜜汁BBQ/
+#: 蒜了吧黄油风味薄皮脆汁鸡、蜜汁快乐共 7 项，18–22g 蛋白，蛋白密度高，
+#: 曾占满饮品候选前 12）；词尾锚定后"100%苹果汁"仍是饮品，餐食落入
+#: other（不含主餐/小食关键词）。
+_DRINK_SUFFIXES = ("汁",)
+
 
 def classify(name: str) -> str:
-    """按名称判断餐品类别，返回 ``main|side|drink|other``（规则按序，命中即返回）。"""
+    """按名称判断餐品类别，返回 ``main|side|drink|other``（规则按序，命中即返回）。
+
+    饮品规则 = 子串关键词（:data:`_CLASSIFY_RULES`）或词尾关键词
+    (:data:`_DRINK_SUFFIXES`)；主餐/小食规则不受影响。
+    """
     for category, keywords in _CLASSIFY_RULES:
         if any(keyword in name for keyword in keywords):
             return category
+    if name.endswith(_DRINK_SUFFIXES):
+        return "drink"
     return "other"
 
 
