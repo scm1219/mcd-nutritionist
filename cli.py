@@ -9,6 +9,7 @@
     python cli.py analyze --items "双层吉士汉堡x1,中薯条x1" [--daily-kcal 2000]
         [--daily-sodium 2000] [--json]
     python cli.py history [--days N] [--detail] [--json]
+    python cli.py suggest --max-kcal 600 [--min-protein 25] [--top 3] [--json]
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from scripts.history import (
     render_human as render_history,
     summarize as summarize_history,
 )
+from scripts.suggest import render_human as render_suggest, suggest_combos, to_payload
 
 #: 仓库根（cli.py 所在目录）：定位缓存与别名表
 REPO_ROOT = Path(__file__).resolve().parent
@@ -69,6 +71,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     history.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
     history.set_defaults(handler=cmd_history)
+
+    suggest = subparsers.add_parser("suggest", help="按热量/蛋白质约束推荐配餐组合")
+    suggest.add_argument(
+        "--max-kcal", type=float, required=True, help="单餐热量上限（kcal），必填"
+    )
+    suggest.add_argument(
+        "--min-protein", type=float, default=0.0, help="蛋白质下限（g），默认 0"
+    )
+    suggest.add_argument("--top", type=int, default=3, help="输出组合数，默认 3")
+    suggest.add_argument("--json", action="store_true", help="输出 JSON（机器可读）")
+    suggest.set_defaults(handler=cmd_suggest)
     return parser
 
 
@@ -141,6 +154,36 @@ def cmd_history(args: argparse.Namespace) -> int:
     summary = summarize_history(orders_raw, table, args.days)
     summary["detail"] = args.detail  # 展示开关只给人读渲染用
     emit(summary, render_history(summary), args.json)
+    return EXIT_OK
+
+
+def cmd_suggest(args: argparse.Namespace) -> int:
+    """suggest 子命令：营养表内按热量/蛋白质约束搜索配餐组合（基础模式，
+    ``--store`` 门店菜单模式由 Task 7 扩展）。"""
+    if args.top < 1:
+        fail(f"参数错误：--top 必须为正整数（收到 {args.top}）", EXIT_USAGE)
+
+    try:
+        table = _load_table()
+    except McduError as exc:
+        fail(exc.message, EXIT_BUSINESS)
+
+    combos = suggest_combos(
+        table, max_kcal=args.max_kcal, min_protein=args.min_protein, top=args.top
+    )
+    if not combos:
+        fail(
+            f"无满足条件的配餐组合（热量 ≤ {args.max_kcal:g} kcal"
+            f" 且蛋白质 ≥ {args.min_protein:g} g），"
+            "可放宽 --max-kcal 或降低 --min-protein 后重试",
+            EXIT_BUSINESS,
+        )
+
+    emit(
+        to_payload(args.max_kcal, args.min_protein, combos),
+        render_suggest(combos),
+        args.json,
+    )
     return EXIT_OK
 
 
